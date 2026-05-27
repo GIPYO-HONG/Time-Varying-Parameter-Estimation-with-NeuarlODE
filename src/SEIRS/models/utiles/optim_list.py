@@ -10,3 +10,10 @@ def adam_clipping(lr, clip=1.0):
         optax.adam(lr)
     )
     return optimizer
+
+def adamw(lr, wd=1e-5):
+    optimizer = optax.adamw(
+        learning_rate=lr,
+        weight_decay=wd,
+    )
+    return optimizer

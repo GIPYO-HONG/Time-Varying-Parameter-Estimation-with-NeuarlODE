@@ -33,25 +33,30 @@ class Dynamics(eqx.Module):
 
 class Argphy(eqx.Module):
     hidden_dyn: Dynamics
-    hidden_vec: jnp.ndarray
-    hidden_to_beta: eqx.nn.Linear
 
-    parameter: jnp.ndarray
+    hidden_vec: jnp.ndarray
+
+    hidden_to_beta: eqx.nn.Linear
+    hidden_to_sigma: eqx.nn.Linear
+
     y0: jnp.ndarray
 
     def __init__(self, hidden_dim, width_size, depth, *, key):
-        dyn_key, htb_key, hvec_key, param_key = jr.split(key, 4)
+        beta_key, hvec_key, htb_key, hts_key = jr.split(key, 4)
 
-        self.hidden_dyn = Dynamics(hidden_dim, width_size, depth, key=dyn_key)
+        self.hidden_dyn = Dynamics(hidden_dim, width_size, depth, key=beta_key)
+
         self.hidden_vec = 0.01 * jr.normal(hvec_key, (hidden_dim,))
-        self.hidden_to_beta = eqx.nn.Linear(hidden_dim, 1, key=htb_key)
-        
-        self.parameter = jr.uniform(param_key, (4, ), minval=0.0, maxval=1.0)
-        self.y0 = jnp.array([5000., 10., 50., 0.])
 
-    def get_beta(self, h):
-        beta = jnn.sigmoid(self.hidden_to_beta(h))
-        return beta.squeeze()
+        self.hidden_to_beta = eqx.nn.Linear(hidden_dim, 1, key=htb_key)
+        self.hidden_to_sigma = eqx.nn.Linear(hidden_dim, 1, key=hts_key)
+        
+        self.y0 = jnp.array([4865., 9., 68., 0.])
+
+    def get_param(self, h):
+        beta = jnn.softplus(self.hidden_to_beta(h))
+        sigma = jnn.softplus(self.hidden_to_sigma(h))
+        return beta.squeeze(), sigma.squeeze()
 
     def RHS(self, t, y, args=None):
         state, h = y
@@ -59,10 +64,9 @@ class Argphy(eqx.Module):
         S, E, I, R = state
         N = S+E+I+R
 
-        mm, dd, r = 0.0003671, 0.0027400, 0.0006762
-        ss, kk, aa, gg = jnp.abs(self.parameter)
+        mm, dd, r, kk, aa, gg = 0.0003671, 0.0027400, 0.0006762, 0.0001500, 0.0300000, 0.3500000
 
-        bb = self.get_beta(h)
+        bb, ss = self.get_param(h)
 
         dS = - bb * I*S / N - mm*S + r*N + dd*R
         dE = bb * I * S / N - (mm + ss + kk)*E
@@ -96,14 +100,13 @@ class Argphy(eqx.Module):
 
         states, h = sol.ys
 
-        return states, h  # normalized 상태로 반환
-
+        return states, h
 
 ########## Experiment ##########
 
 class Experiment(BaseExperiment):
 
-    def __init__(self, ts, ys, hidden_dim=8, width_size=64, depth=4, **kwargs):
+    def __init__(self, ts, ys, hidden_dim=16, width_size=64, depth=4, **kwargs):
 
         seed = kwargs.get("seed", 5678)
 
@@ -124,11 +127,11 @@ class Experiment(BaseExperiment):
 
 ########## Evaluation ##########
 
-def Evaluation(EX, ts_eval, loss_list, viz_data=False):
+def Evaluation(EX, ts_eval, loss_list):
     ts_data, ys_data, model = EX.ts, EX.ys, EX.model
 
     ys_pred, h_pred = model(ts_eval)
 
-    beta_pred = jax.vmap(model.get_beta)(h_pred)
+    beta_pred, sigma_pred = jax.vmap(model.get_param)(h_pred)
 
-    plotting(ts_data, ys_data, ts_eval, ys_pred, beta_pred, loss_list, viz_data)
+    plotting(ts_data, ys_data, ts_eval, ys_pred, beta_pred, sigma_pred, loss_list)

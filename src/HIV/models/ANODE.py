@@ -38,6 +38,7 @@ class Argphy(eqx.Module):
     norm_scale: tuple = eqx.field(static=True)
 
     parameter: jnp.ndarray
+    Tu0_raw: jnp.ndarray   # unconstrained, sigmoid로 (0, T_total) 범위로 변환
 
     def __init__(self, hidden_dim, width_size, depth, norm_scale, *, key):
         dyn_key, htb_key, hvec_key = jr.split(key, 3)
@@ -47,7 +48,15 @@ class Argphy(eqx.Module):
         self.hidden_to_eta = eqx.nn.Linear(hidden_dim, 1, key=htb_key)
         self.norm_scale = tuple(norm_scale.tolist())
 
-        self.parameter = jnp.array([20., 1., 1100., 1., 1.])
+        def softplus_inv(x):
+            return jnp.log(jnp.expm1(x))
+
+        targets = jnp.array([44.21, 0.11767, 1093.4, 0.5535, 3.0657])
+        self.parameter = softplus_inv(targets)
+
+        # sigmoid_inv(550/630) ≈ 1.928
+        # → sigmoid(1.928) * T_total ≈ 550 으로 시작
+        self.Tu0_raw = jnp.array(1.928)
 
     def get_eta(self, h):
         eta = jnn.sigmoid(self.hidden_to_eta(h))
@@ -78,14 +87,18 @@ class Argphy(eqx.Module):
     def __call__(self, y0, ts):
         h0 = self.hidden_vec
 
+        # Tu0를 (0, T_total) 범위로 제한 → Ti0 < 0 방지
+        Tu0 = jnn.sigmoid(self.Tu0_raw) * y0[0]
+        Ti0 = y0[0] - Tu0
+        V0  = y0[1]
+        y0_ = jnp.stack([Tu0, Ti0, V0])
+
         scale = jnp.array(self.norm_scale)
-        norm_y0 = y0 / scale
+        norm_y0 = y0_ / scale
 
         sol = diffrax.diffeqsolve(
             diffrax.ODETerm(self.RHS),
-            # diffrax.Tsit5(),
             diffrax.Kvaerno5(),
-            # diffrax.Dopri8(),
             t0=ts[0],
             t1=ts[-1],
             dt0=0.001,
@@ -98,21 +111,20 @@ class Argphy(eqx.Module):
 
         norm_states, h = sol.ys
 
-        return norm_states, h  # normalized 상태로 반환
+        return norm_states, h
 
 
 ########## Experiment ##########
 
 class Experiment(BaseExperiment):
 
-    def __init__(self, ts, y0, ys, eta, hidden_dim=8, width_size=64, depth=4, **kwargs):
+    def __init__(self, ts, ys, eta, hidden_dim=8, width_size=64, depth=4, **kwargs):
 
         seed = kwargs.get("seed", 5678)
 
         scales_obs = jnp.max(ys, axis=0) + 1e-6  # shape: (2,), [T_max, V_max]
         self.scales = scales_obs
 
-        # Argphy에는 state (TU, TI, V) 3개 스케일 전달
         self.norm_scale = jnp.array([scales_obs[0], scales_obs[0], scales_obs[1]])
 
         model = Argphy(
@@ -125,13 +137,12 @@ class Experiment(BaseExperiment):
 
         super().__init__(model, ts, ys, **kwargs)
 
-        self.y0  = y0
+        self.y0  = ys[0,:]
         self.eta = eta
 
     def loss_fn(self, model, ts, ys):
-        pred, _ = model(self.y0, ts)  # normalized, shape: (T, 3)
+        pred, _ = model(self.y0, ts)
 
-        # scale[0] == scale[1]이므로 pred[:,0]+pred[:,1] = (TU+TI)/T_max
         T_pred = pred[:, 0] + pred[:, 1]
         V_pred = pred[:, 2]
 
@@ -145,12 +156,12 @@ class Experiment(BaseExperiment):
 
 ########## Evaluation ##########
 
-def Evaluation(EX, ts_eval, loss_list, viz_data=False):
-    y0, ts_data, ys_data, eta, model, scales = EX.y0, EX.ts, EX.ys, EX.eta, EX.model, EX.norm_scale
+def Evaluation(EX, y0, ts_eval, loss_list, viz_data=False):
+    ts_data, ys_data, eta, model, scales = EX.ts, EX.ys, EX.eta, EX.model, EX.norm_scale
 
     ys_eval  = get_data(ts_eval, y0, eta)
     ys_pred, h_pred = model(y0, ts_eval)
-    ys_pred = ys_pred * scales              # 복원해서 plotting
+    ys_pred = ys_pred * scales
 
     eta_eval = EX.eta(ts_eval)
     eta_pred = jax.vmap(model.get_eta)(h_pred)
