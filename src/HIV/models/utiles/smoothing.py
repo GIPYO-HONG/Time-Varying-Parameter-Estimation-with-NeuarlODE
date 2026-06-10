@@ -6,30 +6,37 @@ Stage I  : Local polynomial smoothing → T, V, dT, dV, ddV 추정
 Stage II : Pseudo-least squares (PsLS) → lambda, rho, c 추정  [논문 수식 (2.2)]
 Stage III: Semiparametric B-spline regression → delta, N, eta(t) 추정
 
-[수식 재유도 - 논문 (2.5) 수정]
-V'  = N*delta*TI - c*V                          ...(1.3)
-V'' = N*delta*(eta*TU*V - delta*TI) - c*V'
-   → V'' + c*V' = N*delta*eta*TU*V - delta*(V'+c*V)
+[수식 재유도 - 논문 (2.5)]
+V''+ c*V' = N*delta*eta(t)*Tu*V - delta*(V'+c*V)
 
-TU = T - (V'+cV)/(N*delta) 대입 →
+Tu = T - Ti = T - (V'+c*V)/(N*delta) 대입 →
 
 Z = V''+c*V'
-  = U1*eta(t) + U2*delta + U3*N*delta*eta(t)
+  = -delta*(V'+c*V) - eta(t)*(V'*V+c*V^2) + N*delta*eta(t)*T*V
 
 where:
-  U1(t) = -(V'*V + c*V^2)
-  U2(t) = -(V' + c*V)
-  U3(t) = T*V
+  U1(t) = -(V'(t)*V(t) + c*V(t)^2)   ← eta(t) 계수
+  U2(t) = -(V'(t) + c*V(t))           ← delta 계수
+  U3(t) = T(t)*V(t)                   ← N*delta*eta(t) 계수
 
-※ 논문 (2.6)의 U1/U2 역할이 바뀌어 있음에 주의
-  논문: Z = U1*delta + U2*eta + U3*N*delta*eta  (표기 불일치)
-  실제: Z = U2*delta + U1*eta + U3*N*delta*eta
+η(t) ≈ Σ a_j * B_j(t) 대입 시:
+  Z = U2*delta + Σ_j a_j*B_j*(U1 + U3*N*delta)
+
+→ gamma = N*delta 를 profile 방식으로 처리:
+  고정된 gamma에서 [delta, a_1,...,a_s] 선형추정 후
+  gamma를 1D 최적화
+
+[초기값 추정 - 논문 수식 유도]
+  TI = -lambda/(rho-delta) + rho/(rho-delta)*T + 1/(rho-delta)*T'
+  t=0에서 T(0), T'(0)를 Stage I로 추정 → TI(0) 계산
+  TU(0) = T(0) - TI(0)
 """
 
+import warnings
 import math
 import numpy as np
-from scipy.linalg import solve
 from scipy.interpolate import BSpline
+from scipy.optimize import minimize_scalar
 
 
 # ============================================================
@@ -63,7 +70,6 @@ def local_poly_fit(t_eval, t_data, y_data, h, degree, deriv=0):
         weights = epanechnikov_kernel(u)
 
         mask = weights > 0
-        # bandwidth 내 점이 부족하면 2배 확장
         if mask.sum() < degree + 2:
             weights = epanechnikov_kernel(u * 0.5)
             mask = weights > 0
@@ -72,19 +78,12 @@ def local_poly_fit(t_eval, t_data, y_data, h, degree, deriv=0):
         y_loc = y_data[mask]
         w_loc = weights[mask]
 
-        # 설계행렬: 각 열이 (t_i - t0)^j
         T_mat = np.column_stack([(t_loc - t0)**j for j in range(degree + 1)])
-        W_mat = np.diag(w_loc)
 
-        try:
-            A = T_mat.T @ W_mat @ T_mat
-            b = T_mat.T @ W_mat @ y_loc
-            # 수치 안정성을 위한 작은 ridge
-            coef = np.linalg.solve(A + 1e-12 * np.eye(degree + 1), b)
-            # coef[j] = X^(j)(t0) / j!  →  X^(deriv)(t0) = coef[deriv] * deriv!
-            result[i] = coef[deriv] * math.factorial(deriv)
-        except np.linalg.LinAlgError:
-            result[i] = np.nan
+        # lstsq: LinAlgWarning 없이 수치적으로 안정
+        WTmat = T_mat * w_loc[:, None]
+        coef, *_ = np.linalg.lstsq(WTmat, y_loc * w_loc, rcond=None)
+        result[i] = coef[deriv] * math.factorial(deriv)
 
     return result
 
@@ -131,6 +130,14 @@ def stage1_smooth(t_data, T_data, V_data, h_T=None, h_V=None):
 #
 # 설계행렬: X = [1, T, dT, -V],  Y = dV
 # 추정 후:  lambda = -alpha0/alpha2,  rho = alpha1/alpha2
+#
+# 또한 논문 수식으로부터:
+#   TI = -lambda/(rho-delta) + rho/(rho-delta)*T + 1/(rho-delta)*T'
+#      = alpha0'             + alpha1'*T          + alpha2'*T'
+# where alpha0' = -lambda/(rho-delta),
+#       alpha1' = rho/(rho-delta),
+#       alpha2' = 1/(rho-delta)
+# → t=0에서 TI(0), TU(0) 추정 가능
 
 def stage2_psls(stage1, ridge=1e-6):
     """논문 Section 2.2: lambda, rho, c 추정"""
@@ -142,40 +149,71 @@ def stage2_psls(stage1, ridge=1e-6):
     X = np.column_stack([np.ones_like(T), T, dT, -V])
     Y = dV
 
-    beta = solve(
-        X.T @ X + ridge * np.eye(4),
-        X.T @ Y,
-    )
+    # lstsq로 경고 없이 안정적 추정
+    beta, *_ = np.linalg.lstsq(X, Y, rcond=None)
     alpha0, alpha1, alpha2, c_hat = beta
 
     return {
-        "lambda": -alpha0 / alpha2,
-        "rho":    alpha1 / alpha2,
-        "c":      c_hat,
+        "lambda":  -alpha0 / alpha2,
+        "rho":      alpha1 / alpha2,
+        "c":        c_hat,
+        "alpha0":   alpha0,
+        "alpha1":   alpha1,
+        "alpha2":   alpha2,
     }
+
+
+def estimate_initial_conditions(stage1, stage2, stage3):
+    """
+    논문 수식으로부터 TI(0), TU(0) 추정
+
+    TI = -lambda/(rho-delta) + rho/(rho-delta)*T + 1/(rho-delta)*T'
+
+    t=0에서:
+      T(0)  = stage1["T"][0]
+      T'(0) = stage1["dT"][0]
+    """
+    lam   = stage2["lambda"]
+    rho   = stage2["rho"]
+    delta = stage3["delta"]
+
+    denom = rho - delta
+    if abs(denom) < 1e-10:
+        print("  Warning: rho ≈ delta, TI(0) 추정 불안정")
+        return {"TI0": np.nan, "TU0": np.nan}
+
+    T0  = stage1["T"][0]
+    dT0 = stage1["dT"][0]
+
+    TI0 = -lam / denom + (rho / denom) * T0 + (1.0 / denom) * dT0
+    TU0 = T0 - TI0
+
+    return {"TI0": TI0, "TU0": TU0, "T0": T0}
 
 
 # ============================================================
 # Stage III: Semiparametric B-spline Regression
 # ============================================================
-# 올바른 수식 (직접 유도):
-#   Z(t)  = V''(t) + c*V'(t)
-#   U1(t) = -(V'(t)*V(t) + c*V(t)^2)    ← eta 계수
-#   U2(t) = -(V'(t) + c*V(t))            ← delta 계수
-#   U3(t) = T(t)*V(t)                    ← N*delta*eta 계수
+# Z = U2*delta + Σ_j a_j * B_j(t) * (U1 + U3 * gamma)
 #
-#   Z = U1*eta(t) + U2*delta + U3*N*delta*eta(t)
+# gamma = N*delta 를 고정하면 → 선형 시스템
+# theta = [delta, a_1, ..., a_s]
 #
-# η(t) ≈ sum_j a_j * B_{j,k}(t) 로 B-spline 근사하면
-# → theta = [delta, a_1,...,a_s, (N*delta)*a_1,...,(N*delta)*a_s]
-#   에 대한 선형 시스템
+# gamma는 profile RSS 최소화로 추정:
+#   RSS(gamma) = ||Z - X(gamma)*theta(gamma)||^2
+#
+# 최종:
+#   delta = theta[0]
+#   a     = theta[1:]
+#   N     = gamma / delta
+#   eta(t)= B @ a
 
 def make_bspline_basis(t, n_knots=5, degree=2):
     """
     B-spline basis matrix 생성
 
     논문: AICc로 order(=degree+1)와 knot 수 선택
-    내부 knot: uniform 간격 (log-scale 버전은 select_bspline_params에서 옵션 제공)
+    내부 knot: uniform 간격
     """
     t_min, t_max = t.min(), t.max()
     inner_knots = np.linspace(t_min, t_max, n_knots + 2)[1:-1]
@@ -193,16 +231,38 @@ def make_bspline_basis(t, n_knots=5, degree=2):
     return basis
 
 
-def stage3_bspline(stage1, c_hat, n_knots=5, degree=2, ridge=1e-6):
+def _fit_given_gamma(Z, U1, U2, U3, B, gamma, ridge=1e-6):
     """
-    논문 Section 2.3: B-spline 선형회귀로 delta, N, eta(t) 추정
+    gamma = N*delta 고정 시 선형 추정
+    theta = [delta, a_1, ..., a_s]
 
     설계행렬:
-      col 0       : U2          → delta
-      col 1..s    : B[:,j]*U1   → a_j (eta B-spline 계수)
-      col s+1..2s : B[:,j]*U3   → (N*delta)*a_j
+      col 0    : U2                        → delta
+      col 1..s : B_j(t) * (U1 + U3*gamma) → a_j
+    """
+    s = B.shape[1]
+    col_delta = U2.reshape(-1, 1)
+    cols_a    = B * (U1 + U3 * gamma).reshape(-1, 1)
+    X = np.hstack([col_delta, cols_a])
 
-    theta = [delta, a_1,...,a_s, N*delta*a_1,...,N*delta*a_s]
+    # lstsq + ridge: 경고 없이 안정적
+    XtX = X.T @ X + ridge * np.eye(1 + s)
+    XtZ = X.T @ Z
+    theta, *_ = np.linalg.lstsq(XtX, XtZ, rcond=None)
+
+    resid = Z - X @ theta
+    rss   = np.sum(resid**2)
+    return theta, resid, rss
+
+
+def stage3_bspline(stage1, c_hat, n_knots=5, degree=2, ridge=1e-6,
+                   gamma_bounds=(1.0, 5000.0)):
+    """
+    논문 Section 2.3: profile regression으로 delta, N, eta(t) 추정
+
+    1. gamma = N*delta 를 profile RSS 최소화로 추정
+    2. 고정된 gamma에서 [delta, a_1,...,a_s] 선형 추정
+    3. N = gamma / delta,  eta(t) = B @ a
     """
     t   = stage1["t"]
     T   = stage1["T"]
@@ -211,45 +271,38 @@ def stage3_bspline(stage1, c_hat, n_knots=5, degree=2, ridge=1e-6):
     ddV = stage1["ddV"]
 
     Z  = ddV + c_hat * dV
-    U1 = -(dV * V + c_hat * V**2)   # eta 계수
-    U2 = -(dV + c_hat * V)           # delta 계수
-    U3 = T * V                        # N*delta*eta 계수
+    U1 = -(dV * V + c_hat * V**2)
+    U2 = -(dV + c_hat * V)
+    U3 = T * V
 
     B = make_bspline_basis(t, n_knots=n_knots, degree=degree)
-    s = B.shape[1]
 
-    # 설계행렬 조립
-    col_delta = U2.reshape(-1, 1)
-    cols_a    = B * U1.reshape(-1, 1)    # B_j(t) * U1(t)
-    cols_Nda  = B * U3.reshape(-1, 1)    # B_j(t) * U3(t)
-    X_full = np.hstack([col_delta, cols_a, cols_Nda])
+    def profile_rss(gamma):
+        _, _, rss = _fit_given_gamma(Z, U1, U2, U3, B, gamma, ridge)
+        return rss
 
-    theta = solve(
-        X_full.T @ X_full + ridge * np.eye(X_full.shape[1]),
-        X_full.T @ Z,
+    result = minimize_scalar(
+        profile_rss,
+        bounds=gamma_bounds,
+        method="bounded",
+        options={"xatol": 1e-4, "maxiter": 500},
     )
+    gamma_hat = result.x
+
+    theta, resid, _ = _fit_given_gamma(Z, U1, U2, U3, B, gamma_hat, ridge)
 
     delta_hat = theta[0]
-    a_hat     = theta[1 : 1 + s]
-    Nda_hat   = theta[1 + s :]          # (N*delta)*a_j
-
-    # N 역산: (N*delta*a_j) / (delta*a_j)
-    denom = delta_hat * a_hat
-    valid = np.abs(denom) > 1e-8 * (np.abs(denom).max() + 1e-30)
-    if valid.sum() > 0:
-        N_hat = np.median(Nda_hat[valid] / denom[valid])
-    else:
-        N_hat = np.nan
-
-    # eta(t) 복원
-    eta_hat = B @ a_hat
+    a_hat     = theta[1:]
+    N_hat     = gamma_hat / delta_hat if abs(delta_hat) > 1e-10 else np.nan
+    eta_hat   = B @ a_hat
 
     return {
-        "delta": delta_hat,
-        "N":     N_hat,
-        "eta":   eta_hat,
-        "a":     a_hat,
-        "residuals": Z - X_full @ theta,
+        "delta":     delta_hat,
+        "N":         N_hat,
+        "gamma":     gamma_hat,
+        "eta":       eta_hat,
+        "a":         a_hat,
+        "residuals": resid,
     }
 
 
@@ -268,6 +321,7 @@ def aicc(residuals, n_params, n_obs):
 def select_bspline_params(stage1, c_hat,
                           knot_range=range(3, 9),
                           degree_range=(2, 3),
+                          gamma_bounds=(1.0, 5000.0),
                           ridge=1e-6):
     """AICc 기준으로 B-spline degree/n_knots 선택 - 논문 Table 2, 3"""
     t   = stage1["t"]
@@ -291,12 +345,22 @@ def select_bspline_params(stage1, c_hat,
             try:
                 B = make_bspline_basis(t, n_knots=n_knots, degree=degree)
                 s = B.shape[1]
-                X = np.hstack([U2.reshape(-1,1),
-                                B * U1.reshape(-1,1),
-                                B * U3.reshape(-1,1)])
-                theta = solve(X.T @ X + ridge * np.eye(X.shape[1]), X.T @ Z)
-                resid = Z - X @ theta
-                n_params = 1 + 2 * s
+
+                def profile_rss(gamma, B=B):
+                    _, _, rss = _fit_given_gamma(Z, U1, U2, U3, B, gamma, ridge)
+                    return rss
+
+                res = minimize_scalar(
+                    profile_rss,
+                    bounds=gamma_bounds,
+                    method="bounded",
+                    options={"xatol": 1e-3, "maxiter": 200},
+                )
+                gamma_hat = res.x
+                _, resid, _ = _fit_given_gamma(
+                    Z, U1, U2, U3, B, gamma_hat, ridge
+                )
+                n_params = s + 2
                 val = aicc(resid, n_params, n_obs)
                 rows.append((degree, n_knots, n_params, val))
                 if val < best_aicc:
@@ -322,6 +386,7 @@ def mssb_estimate(t_data, T_data, V_data,
                   h_T=None, h_V=None,
                   auto_select=True,
                   n_knots=5, degree=2,
+                  gamma_bounds=(1.0, 5000.0),
                   ridge=1e-6):
     """
     MSSB 전체 파이프라인 실행
@@ -329,11 +394,12 @@ def mssb_estimate(t_data, T_data, V_data,
     Parameters
     ----------
     t_data, T_data, V_data : 관측 데이터 (numpy array)
-    h_T, h_V   : Stage I bandwidth (None이면 Silverman rule)
-    auto_select: True면 AICc로 B-spline 파라미터 자동 선택
-    n_knots    : auto_select=False일 때 사용할 knot 수
-    degree     : auto_select=False일 때 사용할 B-spline degree
-    ridge      : 수치 안정성을 위한 ridge 패널티
+    h_T, h_V      : Stage I bandwidth (None이면 Silverman rule)
+    auto_select   : True면 AICc로 B-spline 파라미터 자동 선택
+    n_knots       : auto_select=False일 때 사용할 knot 수
+    degree        : auto_select=False일 때 사용할 B-spline degree
+    gamma_bounds  : N*delta 탐색 범위 (lower, upper)
+    ridge         : 수치 안정성을 위한 ridge 패널티
     """
 
     # --------------------------------------------------
@@ -361,7 +427,11 @@ def mssb_estimate(t_data, T_data, V_data,
     print("\n--- Stage III: Semiparametric B-spline for delta, N, eta(t) ---")
 
     if auto_select:
-        best = select_bspline_params(stage1, c_hat, ridge=ridge)
+        best = select_bspline_params(
+            stage1, c_hat,
+            gamma_bounds=gamma_bounds,
+            ridge=ridge,
+        )
         n_knots = best["n_knots"]
         degree  = best["degree"]
         print(f"\n  선택된 B-spline: degree={degree}, n_knots={n_knots}")
@@ -370,10 +440,21 @@ def mssb_estimate(t_data, T_data, V_data,
         stage1, c_hat,
         n_knots=n_knots, degree=degree,
         ridge=ridge,
+        gamma_bounds=gamma_bounds,
     )
+    print(f"  gamma (N*delta) = {stage3['gamma']:.4f}")
 
     if np.any(stage3["eta"] < 0):
         print(f"  Warning: eta(t) 음수 포함 (min={stage3['eta'].min():.4e})")
+
+    # --------------------------------------------------
+    # 초기값 추정
+    # --------------------------------------------------
+    print("\n--- Initial Conditions ---")
+    ic = estimate_initial_conditions(stage1, stage2, stage3)
+    print(f"  T(0)  = {ic['T0']:.4f}   (true: 630.0)")
+    print(f"  TI(0) = {ic['TI0']:.4f}  (true: 30.0)")
+    print(f"  TU(0) = {ic['TU0']:.4f}  (true: 600.0)")
 
     # --------------------------------------------------
     # 결과 출력
@@ -386,6 +467,8 @@ def mssb_estimate(t_data, T_data, V_data,
     print(f"  c      = {c_hat:>12.4f}   (true: 3.0)")
     print(f"  delta  = {stage3['delta']:>12.6f}   (true: 0.5)")
     print(f"  N      = {stage3['N']:>12.4f}   (true: 1000.0)")
+    print(f"  TU(0)  = {ic['TU0']:>12.4f}   (true: 600.0)")
+    print(f"  TI(0)  = {ic['TI0']:>12.4f}   (true: 30.0)")
     print(f"\n  eta(t) 첫 10개:")
     for i, v in enumerate(stage3["eta"][:10]):
         t_i = t_data[i]
@@ -395,6 +478,7 @@ def mssb_estimate(t_data, T_data, V_data,
         "stage1": stage1,
         "stage2": stage2,
         "stage3": stage3,
+        "ic":     ic,
     }
 
 
@@ -407,15 +491,22 @@ if __name__ == "__main__":
     # data_generation.py 있으면 사용, 없으면 내부 시뮬레이션
     try:
         import jax.numpy as jnp
+        import jax.random as jr
         from data_generation import get_data, eta
+
+        key = jr.PRNGKey(5678)
+        key1, key2 = jr.split(key)
 
         y0 = jnp.array([600., 30., 10**5])
         t_jax = jnp.linspace(0., 20., 200)
         ys = get_data(t_jax, y0, eta)
 
         t_data = np.array(t_jax)
-        T_data = np.array(ys[:, 0] + ys[:, 1])
-        V_data = np.array(ys[:, 2])
+        T_clean = np.array(ys[:, 0] + ys[:, 1])
+        V_clean = np.array(ys[:, 2])
+
+        T_data = T_clean + np.array(jr.normal(key1, shape=T_clean.shape)) * np.sqrt(1600)
+        V_data = V_clean + np.array(jr.normal(key2, shape=V_clean.shape)) * np.sqrt(10000)
         print("data_generation.py 사용")
 
     except ImportError:
@@ -446,7 +537,6 @@ if __name__ == "__main__":
         T_data = sol.y[0] + sol.y[1]
         V_data = sol.y[2]
 
-        # 논문 시뮬레이션 설정: sigma1=20, sigma2=100
         rng = np.random.default_rng(42)
         T_data = T_data + rng.normal(0, 20,  size=T_data.shape)
         V_data = V_data + rng.normal(0, 100, size=V_data.shape)
@@ -454,5 +544,6 @@ if __name__ == "__main__":
     results = mssb_estimate(
         t_data, T_data, V_data,
         auto_select=True,
+        gamma_bounds=(1.0, 5000.0),
         ridge=1e-6,
     )

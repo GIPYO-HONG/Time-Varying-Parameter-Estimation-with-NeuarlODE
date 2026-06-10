@@ -45,7 +45,7 @@ class BaseExperiment:
         raise NotImplementedError("loss function must return (loss, aux_data)")
     
     # training loop
-    def train(self, optimizer=adamw, lr=1e-3, steps=10000, viz_loss=1000):
+    def train(self, optimizer=adamw_clipping, lr=1e-3, steps=10000, viz_loss=1000):
         params, static = eqx.partition(self.model, eqx.is_inexact_array)
         
         optim = optimizer(lr)

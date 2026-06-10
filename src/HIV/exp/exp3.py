@@ -1,10 +1,14 @@
+# # exp.py 상단에 임시 추가
+# import os
+# os.environ["JAX_DISABLE_JIT"] = "1"
+
 import jax.numpy as jnp
 import jax.random as jr
 from models import *
 
-exp_name = "exp"
+exp_name = "exp3"
 
-model = an
+model = no
 
 key = jr.PRNGKey(5678)
 key1, key2 = jr.split(key)

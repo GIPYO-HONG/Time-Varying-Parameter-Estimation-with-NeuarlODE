@@ -42,6 +42,7 @@ def plotting(ts_data, ys_data, ts_eval, ys_eval, ys_pred, eta_eval, eta_pred, lo
     axs[1][1].plot(ts_eval, eta_eval, label="True eta")
     axs[1][1].plot(ts_eval, eta_pred, label="Pred eta", linestyle="--")
     axs[1][1].set_title(f"eta (Rel. Error 1: {rel_ee:.2e})")
+    axs[1][1].set_ylim(-1e-4, 1e-4)
     axs[1][1].legend()
 
     axs[1][2].plot(loss_list)

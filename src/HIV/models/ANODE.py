@@ -38,7 +38,7 @@ class Argphy(eqx.Module):
     norm_scale: tuple = eqx.field(static=True)
 
     parameter: jnp.ndarray
-    Tu0_raw: jnp.ndarray   # unconstrained, sigmoid로 (0, T_total) 범위로 변환
+    y0: jnp.ndarray
 
     def __init__(self, hidden_dim, width_size, depth, norm_scale, *, key):
         dyn_key, htb_key, hvec_key = jr.split(key, 3)
@@ -49,14 +49,19 @@ class Argphy(eqx.Module):
         self.norm_scale = tuple(norm_scale.tolist())
 
         def softplus_inv(x):
-            return jnp.log(jnp.expm1(x))
+            # softplus(y) ≈ y for large y → inv ≈ identity
+            # 수치 안전한 버전: log(exp(x) - 1) = x + log(1 - exp(-x))
+            return jnp.where(
+                x > 20.0,
+                x,  # large x: softplus_inv(x) ≈ x
+                jnp.log(jnp.expm1(jnp.clip(x, 1e-6, 20.0)))
+            )
 
-        targets = jnp.array([44.21, 0.11767, 1093.4, 0.5535, 3.0657])
-        self.parameter = softplus_inv(targets)
+        targets_param = jnp.array([44.21, 0.11767, 1093.4, 0.5535, 3.0657])
+        self.parameter = softplus_inv(targets_param)
 
-        # sigmoid_inv(550/630) ≈ 1.928
-        # → sigmoid(1.928) * T_total ≈ 550 으로 시작
-        self.Tu0_raw = jnp.array(1.928)
+        targets_y0 = jnp.array([580, 20, 10**5])
+        self.y0 = softplus_inv(targets_y0)
 
     def get_eta(self, h):
         eta = jnn.sigmoid(self.hidden_to_eta(h))
@@ -84,20 +89,16 @@ class Argphy(eqx.Module):
 
         return (dnorm_state, dh)
 
-    def __call__(self, y0, ts):
+    def __call__(self, ts):
         h0 = self.hidden_vec
-
-        # Tu0를 (0, T_total) 범위로 제한 → Ti0 < 0 방지
-        Tu0 = jnn.sigmoid(self.Tu0_raw) * y0[0]
-        Ti0 = y0[0] - Tu0
-        V0  = y0[1]
-        y0_ = jnp.stack([Tu0, Ti0, V0])
+        y0 = jnn.softplus(self.y0)
 
         scale = jnp.array(self.norm_scale)
-        norm_y0 = y0_ / scale
+        norm_y0 = y0 / scale
 
         sol = diffrax.diffeqsolve(
             diffrax.ODETerm(self.RHS),
+            # diffrax.Tsit5(),
             diffrax.Kvaerno5(),
             t0=ts[0],
             t1=ts[-1],
@@ -137,11 +138,10 @@ class Experiment(BaseExperiment):
 
         super().__init__(model, ts, ys, **kwargs)
 
-        self.y0  = ys[0,:]
         self.eta = eta
 
     def loss_fn(self, model, ts, ys):
-        pred, _ = model(self.y0, ts)
+        pred, _ = model(ts)
 
         T_pred = pred[:, 0] + pred[:, 1]
         V_pred = pred[:, 2]
@@ -156,11 +156,11 @@ class Experiment(BaseExperiment):
 
 ########## Evaluation ##########
 
-def Evaluation(EX, y0, ts_eval, loss_list, viz_data=False):
+def Evaluation(EX, y0_, ts_eval, loss_list, viz_data=False):
     ts_data, ys_data, eta, model, scales = EX.ts, EX.ys, EX.eta, EX.model, EX.norm_scale
 
-    ys_eval  = get_data(ts_eval, y0, eta)
-    ys_pred, h_pred = model(y0, ts_eval)
+    ys_eval  = get_data(ts_eval, y0_, eta)
+    ys_pred, h_pred = model(ts_eval)
     ys_pred = ys_pred * scales
 
     eta_eval = EX.eta(ts_eval)
