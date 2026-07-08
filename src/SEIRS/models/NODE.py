@@ -7,9 +7,6 @@ import jax.nn as jnn
 import equinox as eqx
 import diffrax
 
-#BaseExperiment, make_logger, beta_generate, get_data, SEIAR, plotting
-from .utiles import *
-
 
 ########## model define ##########
 
@@ -32,36 +29,14 @@ class Beta(eqx.Module):
         beta_out = self.mlp(t_input)
         return beta_out.squeeze()
     
-class Sigma(eqx.Module):
-    mlp: eqx.nn.MLP
-
-    def __init__(self, width_size, depth, *, key):
-        self.mlp = eqx.nn.MLP(
-            in_size=1,
-            out_size=1,
-            width_size=width_size,
-            depth=depth,
-            activation=lambda x: jnn.softplus(x),
-            final_activation=lambda x: jnn.softplus(x),
-            key=key
-            )
-        
-    def __call__(self, t):
-        t_input = jnp.atleast_1d(t) 
-        beta_out = self.mlp(t_input)
-        return beta_out.squeeze()
-    
-class NODE(eqx.Module):
+class Main(eqx.Module):
     beta: Beta
-    sigma: Sigma
 
     y0: jnp.ndarray
 
-    def __init__(self, width_size, depth, *, key):
-        bb_key, ss_key = jr.split(key, 2)
+    def __init__(self, hidden_dim, width_size, depth, *, key):
 
-        self.beta = Beta(width_size, depth, key=bb_key)
-        self.sigma = Beta(width_size, depth, key=ss_key)
+        self.beta = Beta(width_size, depth, key=key)
 
         self.y0 = jnp.array([4865., 9., 68., 0.])
 
@@ -71,9 +46,8 @@ class NODE(eqx.Module):
         N = S+E+I+R
 
         bb = self.beta(t)
-        ss = self.sigma(t)
 
-        mm, dd, r, kk, aa, gg = 0.0003671, 0.0027400, 0.0006762, 0.0001500, 0.0300000, 0.3500000
+        ss, mm, dd, r, kk, aa, gg = 0.850000, 0.0003671, 0.0027400, 0.0006762, 0.0001500, 0.0300000, 0.3500000
 
         dS = - bb * I*S / N - mm*S + r*N + dd*R
         dE = bb * I * S / N - (mm + ss + kk)*E
@@ -83,6 +57,18 @@ class NODE(eqx.Module):
         dstate = jnp.array([dS, dE, dI, dR])
 
         return dstate
+    
+    def loss(self, ts, ys):
+        pred = self.__call__(ts)
+        loss = jnp.mean(jnp.square(pred[:,2] - ys) / jnp.max(ys).squeeze())
+        return loss
+    
+    def eval(self, ts_eval):
+        ys_pred = self.__call__(ts_eval)
+
+        beta_pred = jax.vmap(lambda t: self.beta(jnp.array([t])))(ts_eval)
+
+        return ys_pred, beta_pred
     
     def __call__(self, ts):
         y0 = jnn.softplus(self.y0)
@@ -101,36 +87,4 @@ class NODE(eqx.Module):
         )
 
         return sol.ys
-    
-########## Experiment ##########
-    
-class Experiment(BaseExperiment):
 
-    def __init__(self, ts, ys, width_size=64, depth=4, **kwargs):
-
-        seed = kwargs.get("seed", 5678)
-
-        model = NODE(
-            width_size,
-            depth,
-            key=jax.random.PRNGKey(seed),
-        )
-
-        super().__init__(model, ts, ys, **kwargs)
-
-    def loss_fn(self, model, ts, ys):
-        pred = model(ts)
-        loss = jnp.mean(jnp.square(pred[:,2] - ys) / jnp.max(ys).squeeze())
-        return loss
-    
-########## Evaluation ##########
-
-def Evaluation(EX, ts_eval, loss_list):
-    ts_data, ys_data, model = EX.ts, EX.ys, EX.model
-
-    ys_pred = model(ts_eval)
-
-    beta_pred = jax.vmap(lambda t: model.beta(jnp.array([t])))(ts_eval)
-    sigma_pred = jax.vmap(lambda t: model.sigma(jnp.array([t])))(ts_eval)
-
-    plotting(ts_data, ys_data, ts_eval, ys_pred, beta_pred, sigma_pred, loss_list)
