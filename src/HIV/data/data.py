@@ -32,9 +32,11 @@ def plot_patient(patid):
 
 def make_data(patid):
     sub = df[df["patid"] == patid]
+
     ts = jnp.array(sub["day"])
-    V = 10.0 ** jnp.array(sub["log10_rna"])
+
     T = jnp.array(sub["cd4"])
+    V = 10**jnp.array(sub["log10_rna"])
     ys = jnp.stack([T, V], axis=1)
 
     y0 = ys[0,:]
@@ -44,5 +46,5 @@ def make_data(patid):
     return ts, ys, y0, scale
 
 if __name__=="__main__":
-    patid = 2 #1~45
+    patid = 16 #1~45
     plot_patient(patid)

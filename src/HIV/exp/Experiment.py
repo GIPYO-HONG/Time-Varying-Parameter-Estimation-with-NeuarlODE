@@ -6,7 +6,7 @@ from utiles import BaseExperiment
 
 class Experiment(BaseExperiment):
 
-    def __init__(self, model_cls, y0, ts, ys, norm_scale,hidden_dim=16, width_size=64, depth=4, **kwargs):
+    def __init__(self, model_cls, y0, ts, ys, norm_scale,hidden_dim=8, width_size=32, depth=2, **kwargs):
 
         seed = kwargs.get("seed", 5678)
 
