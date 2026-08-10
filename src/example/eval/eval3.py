@@ -19,7 +19,7 @@ def plotting():
     axs[1].plot(ts_eval, gg, label="param gamma", linestyle="--")
     axs[1].legend()
 
-    fig.savefig("eval/run3_figure.png", dpi=300, bbox_inches="tight")
+    fig.savefig("eval/eval3_figure.png", dpi=300, bbox_inches="tight")
 
 if __name__=="__main__":
     plotting()

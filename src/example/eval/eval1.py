@@ -14,7 +14,7 @@ def plotting():
     axs[1].plot(ts_eval, pp_pred.squeeze(), label="param", linestyle="--")
     axs[1].legend()
 
-    fig.savefig("eval/run1_figure.png", dpi=300, bbox_inches="tight")
+    fig.savefig("eval/eval1_figure.png", dpi=300, bbox_inches="tight")
 
 if __name__=="__main__":
     plotting()
