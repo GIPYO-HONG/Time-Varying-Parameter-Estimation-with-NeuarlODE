@@ -7,44 +7,54 @@ import diffrax
 
 class Param(eqx.Module):
     mlp: eqx.nn.MLP
+    dim: int = eqx.field(static=True)
+    num: int = eqx.field(static=True)
 
-    def __init__(self, width_size, depth, *, key):
+    def __init__(self, dim, num, width_size, depth, *, key):
+        self.dim = dim
+        self.num = num
+
         self.mlp = eqx.nn.MLP(
-            in_size=1,
-            out_size=1,
+            in_size=2 * self.num,
+            out_size=self.dim ** 2,
             width_size=width_size,
             depth=depth,
-            activation=lambda x: jnn.softplus(x),
-            final_activation=lambda x: jnn.softplus(x),
-            key=key
-            )
-        
+            activation=jnn.softplus,
+            key=key,
+        )
+
     def __call__(self, t):
-        out = self.mlp(jnp.atleast_1d(t))
-        return out.squeeze()
+        frequencies = 2.0 ** jnp.arange(self.num)
+
+        angles = 2.0 * jnp.pi * frequencies * t
+
+        features = jnp.concatenate([
+            jnp.sin(angles),
+            jnp.cos(angles),
+        ])
+
+        out = self.mlp(features)
+
+        return out.reshape(self.dim, self.dim)
 
 class Main(eqx.Module):
     param: Param
 
-    def __init__(self, width_size, depth, *, key):
-        self.param = Param(width_size, depth, key=key)
+    def __init__(self, dim, num, width_size, depth, *, key):
+        self.param = Param(dim, num, width_size, depth, key=key)
 
     def RHS(self, t, y, args=None):
-        pp = self.param(t)
-
-        return pp * y
+        A = self.param(t)
+        return A @ y
 
     def loss(self, y0, ts, ys):
         pred = self.__call__(y0, ts)
-
         loss = jnp.mean(jnp.square(pred - ys))
-
         return loss
 
     def eval(self, y0, ts_eval):
         ys_pred = self.__call__(y0, ts_eval)
         pp_pred = jax.vmap(lambda t: self.param(jnp.array([t])))(ts_eval)
-
         return ys_pred, pp_pred
 
     def __call__(self, y0, ts):
@@ -60,5 +70,4 @@ class Main(eqx.Module):
             adjoint=diffrax.RecursiveCheckpointAdjoint(),
             max_steps=50000,
         )
-
         return sol.ys

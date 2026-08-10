@@ -1,13 +1,9 @@
-import jax.numpy as jnp
 import diffrax
 import matplotlib.pyplot as plt
+from .func_list import *
 
-def func(t, y, args=None):
-    return jnp.cos(4*jnp.pi*y)
-
-def data():
-    ts = jnp.linspace(0, 1, 100)
-    y0 = jnp.array([0.01])
+def data_generate(exp):
+    func, ts, y0, dim = exp()
 
     sol = diffrax.diffeqsolve(
         diffrax.ODETerm(func),
@@ -22,11 +18,11 @@ def data():
         max_steps=50000,
     )
 
-    return y0, sol.ts, sol.ys
+    return y0, sol.ts, sol.ys, dim
 
 
 if __name__ == "__main__":
-    _, t, y = data()
+    _, t, y, _ = data_generate(exp3)
 
     plt.figure(figsize=(6, 4))
     plt.plot(t, y, label=r"$y(t)$")
