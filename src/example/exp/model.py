@@ -49,7 +49,14 @@ class Main(eqx.Module):
 
     def loss(self, y0, ts, ys):
         pred = self.__call__(y0, ts)
-        loss = jnp.mean(jnp.square(pred - ys))
+        data_loss = jnp.mean(jnp.square(pred - ys))
+
+        dbeta_dt = jax.vmap(
+            jax.grad(lambda t: self.param(t).squeeze())
+        )(ts)
+        smoothing_loss = jnp.mean(jnp.square(dbeta_dt))
+        
+        loss = data_loss + 1e-8 * smoothing_loss
         return loss
 
     def eval(self, y0, ts_eval):

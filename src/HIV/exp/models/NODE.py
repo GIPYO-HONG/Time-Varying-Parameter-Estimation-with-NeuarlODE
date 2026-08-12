@@ -1,6 +1,5 @@
 ########## module import ##########
 import jax
-import jax.random as jr
 import jax.numpy as jnp
 import jax.nn as jnn
 
@@ -11,7 +10,7 @@ import diffrax
 
 ########## model define ##########
 
-class Eta(eqx.Module):
+class func(eqx.Module):
     mlp: eqx.nn.MLP
 
     def __init__(self, width_size, depth, *, key):
@@ -31,35 +30,41 @@ class Eta(eqx.Module):
         return eta_out.squeeze()
     
 class Main(eqx.Module):
-    eta: Eta
+    k: func
     norm_scale: tuple = eqx.field(static=True)
 
     y0: jnp.ndarray
 
-    def __init__(self, y0, hidden_dim, width_size, depth, norm_scale, *, key):
+    param: tuple = eqx.field(static=True)
+
+    def __init__(self, y0, param, hidden_dim, width_size, depth, norm_scale, *, key):
 
         self.norm_scale = tuple(norm_scale.tolist())
 
-        self.eta = Eta(width_size, depth, key=key)
+        self.k = func(width_size, depth, key=key)
 
-        self.y0 = jnp.array([y0[0], 0, y0[1]])
+        self.y0 = jnp.array([y0[0]-50, 50, y0[1]])
+
+        self.param = tuple(param)
     
     def RHS(self, t, y, args=None):
         norm_state = y
 
         scale = jnp.array(self.norm_scale)
         state = norm_state * scale
-        Tu, Ti, V = state
+        S, I, V = state
 
-        ee = self.eta(t)
+        k = self.k(t)
 
-        ll, d, dd, N, c = 10.0, 0.01, 0.7, 100, 13.0
+        ll, N, c = self.param
 
-        dTu = ll - d*Tu - ee*V*Tu
-        dTi = ee*V*Tu - dd*Ti
-        dV = N*dd*Ti - c*V
+        d, aa_1, ee, dd, aa_2 = 0.01, 0.7, 1, 0.7, 0.3
 
-        dstate = jnp.array([dTu, dTi, dV])
+        dS = ll - d*S - (1-aa_1*ee)*k*V*S
+        dI = (1-aa_1*ee)*k*V*S - dd*I
+        dV = (1-aa_2*ee)*N*dd*I - c*V
+
+        dstate = jnp.array([dS, dI, dV])
         dnorm_state = dstate / scale
 
         return dnorm_state
@@ -81,9 +86,9 @@ class Main(eqx.Module):
         ys_pred = self.__call__(ts_eval)
         ys_pred = ys_pred * jnp.array(self.norm_scale)
 
-        eta_pred = jax.vmap(lambda t: self.eta(jnp.array([t])))(ts_eval)
+        k_pred = jax.vmap(lambda t: self.k(jnp.array([t])))(ts_eval)
 
-        return ys_pred, eta_pred
+        return ys_pred, k_pred
     
     def __call__(self, ts):
         y0 = self.y0

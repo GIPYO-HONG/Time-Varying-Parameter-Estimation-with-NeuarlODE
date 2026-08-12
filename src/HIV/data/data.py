@@ -4,14 +4,12 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import jax.numpy as jnp
 
-# 파일 로드
-path = os.path.join(os.getcwd(), "HIV/data/ACTG315.csv")
+path = os.path.join(os.getcwd(), "data/ACTG315.csv")
 df = pd.read_csv(path, sep=r"\s+", header=0,
                  names=["obs_no", "patid", "day", "log10_rna", "cd4"])
 df = df.astype({"patid": int, "day": float, "log10_rna": float, "cd4": float})
 df = df.sort_values(["patid", "day"]).reset_index(drop=True)
 
-# 시각화
 def plot_patient(patid):
     sub = df[df["patid"] == patid]
     fig, axes = plt.subplots(1, 2, figsize=(11, 4))
@@ -43,6 +41,8 @@ def make_data(patid):
 
     scale_ = jnp.max(ys, axis=0) + 1e-6
     scale = jnp.array([scale_[0], scale_[0], scale_[1]])
+
+   
     return ts, ys, y0, scale
 
 if __name__=="__main__":

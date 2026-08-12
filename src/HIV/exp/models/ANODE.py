@@ -45,28 +45,28 @@ class Main(eqx.Module):
         self.hidden_to_eta = eqx.nn.Linear(hidden_dim, 1, key=htb_key)
         self.norm_scale = tuple(norm_scale.tolist())
 
-        self.y0 = jnp.array([y0[0], 0, y0[1]])
+        self.y0 = jnp.array([y0[0]-10, 10, y0[1]])
 
-    def get_eta(self, h):
-        eta = jnn.sigmoid(self.hidden_to_eta(h))
-        return eta.squeeze()
+    def get_k(self, h):
+        k = jnn.sigmoid(self.hidden_to_eta(h))
+        return k.squeeze()
 
     def RHS(self, t, y, args=None):
         norm_state, h = y
 
         scale = jnp.array(self.norm_scale)
         state = norm_state * scale
-        Tu, Ti, V = state
+        S, I, V = state
 
-        ee = self.get_eta(h)
+        k = self.get_k(h)
 
-        ll, d, dd, N, c = 10.0, 0.01, 0.7, 100, 13.0
+        ll, d, aa_1, ee, dd, aa_2, N, c = 10.0, 0.01, 0.7, 1, 0.7, 0.3, 100, 13
+        
+        dS = ll - d*S - (1-aa_1*ee)*k*V*S
+        dI = (1-aa_1*ee)*k*V*S - dd*I
+        dV = (1-aa_2*ee)*N*dd*I - c*V
 
-        dTu = ll - d*Tu - ee*V*Tu
-        dTi = ee*V*Tu - dd*Ti
-        dV = N*dd*Ti - c*V
-
-        dstate = jnp.array([dTu, dTi, dV])
+        dstate = jnp.array([dS, dI, dV])
         dnorm_state = dstate / scale
 
         dh = self.hidden_dyn(t, jnp.concatenate([h, norm_state]), args)
@@ -90,9 +90,9 @@ class Main(eqx.Module):
         ys_pred, h_pred = self.__call__(ts_eval)
         ys_pred = ys_pred * jnp.array(self.norm_scale)
 
-        eta_pred = jax.vmap(self.get_eta)(h_pred)
+        k_pred = jax.vmap(self.get_k)(h_pred)
 
-        return ys_pred, eta_pred
+        return ys_pred, k_pred
 
     def __call__(self, ts):
         h0 = self.hidden_vec

@@ -15,4 +15,4 @@ EX = Experiment(
 )
 
 if __name__=="__main__":
-    EX.train(lr=1e-4, steps=100000, lbfgs_steps=0)
+    EX.train(lr=1e-4, steps=50000, lbfgs_steps=0)
