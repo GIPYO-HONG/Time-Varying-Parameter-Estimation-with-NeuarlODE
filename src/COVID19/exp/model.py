@@ -19,7 +19,8 @@ class Beta(eqx.Module):
             width_size=width_size,
             depth=depth,
             activation=jnn.tanh,
-            final_activation=jnn.sigmoid,
+            # final_activation=jnn.sigmoid,
+            final_activation=jnn.softplus,
             key=key,
         )
 
@@ -74,7 +75,7 @@ class Main(eqx.Module):
     def loss(self, ts, ys):
         pred = self.__call__(ts)
         scale = jnp.max(ys, axis=0)
-        data_loss = jnp.mean(jnp.square((pred[:,2] - ys) / scale))
+        data_loss = jnp.mean(jnp.square((0.25*pred[:,1] - ys) / scale))
         return data_loss
     
     def eval(self, ts_eval):

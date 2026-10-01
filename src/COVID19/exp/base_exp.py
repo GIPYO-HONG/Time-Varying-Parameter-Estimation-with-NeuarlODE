@@ -14,7 +14,7 @@ class BaseExperiment:
     Base training experiment class.
     """
 
-    def __init__(self, model, ts, ys, exp_name, base_dir="results", seed=5678):
+    def __init__(self, model, ts, ys, exp_name, base_dir="results", seed=123):
         #-------- path define --------
         self.exp_dir = os.path.join(base_dir, exp_name)
         self.ckpt_dir = os.path.join(self.exp_dir, "model_parameter")

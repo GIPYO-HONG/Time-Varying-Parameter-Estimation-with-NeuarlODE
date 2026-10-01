@@ -4,7 +4,8 @@ import exp.model as model
 
 exp_name = "run"
 
-ts, ys, days = make_data("2020-01-20", "2021-04-22")
+ts, ys, days = make_data("20200124", "20231231")
+# ts, ys, days = make_data("20200124", "20211231")
 
 EX = Experiment(
     model_cls = model.Main,

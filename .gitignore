@@ -6,6 +6,6 @@ __pycache__/
 results/
 model_tmp.py
 nohup.out
-tmp/
+COVID19_tmp/
 SEIRS/
 SEIAR/

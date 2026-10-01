@@ -31,18 +31,13 @@ class Experiment(BaseExperiment):
     def plotting(self, ts_eval, loss_list=None):
         ys_pred, beta_pred = self.eval(ts_eval)
 
-        fig, axs = plt.subplots(1, 3, figsize=(15, 5))
+        fig, axs = plt.subplots(2, 1, figsize=(15, 5))
 
-        axs[0].plot(self.ts, self.ys.squeeze(), ".", label="True I")
-        axs[0].plot(ts_eval, ys_pred[:, 2], "--", label="Pred I")
+        axs[0].plot(self.ts, self.ys.squeeze(), ".", label="DATA")
+        axs[0].plot(ts_eval, 0.25*ys_pred[:, 1], "--", label="PREDICTION")
         axs[0].legend()
 
         axs[1].plot(ts_eval, beta_pred, label="Pred beta", linestyle="--")
         axs[1].legend()
-
-        if loss_list is not None:
-            axs[2].plot(loss_list)
-            axs[2].set_yscale("log")
-            axs[2].set_title("Training Loss")
 
         return fig
