@@ -9,3 +9,7 @@ nohup.out
 COVID19_tmp/
 SEIRS/
 SEIAR/
+HIV_tmp/
+tmp/
+eval/
+weights/
