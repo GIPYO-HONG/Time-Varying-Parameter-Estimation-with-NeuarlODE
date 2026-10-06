@@ -23,7 +23,7 @@ df = pd.read_csv(path, sep=r"\s+", header=0, names=["obs_no", "patid", "day", "l
 df = df.astype({"patid": int, "day": float, "log10_rna": float, "cd4": float})
 df = df.sort_values(["patid", "day"]).reset_index(drop=True)
 
-params = jnp.array([19.9, 0.01, 0.7, 2000, 13]) # ll, d, dd, N, c
+params = jnp.array([10.0, 0.01, 0.7, 8e-4]) # ll, d, dd, k
 
 def make_data(patid):
     sub = df[df["patid"] == patid]
@@ -92,11 +92,11 @@ class Param(eqx.Module):
 
         self.mlp = eqx.nn.MLP(
             in_size = 1,
-            out_size=1,
+            out_size=2,
             width_size=width_size,
             depth=depth,
             activation=jnn.tanh,
-            final_activation=lambda x: 0.001 * jnn.sigmoid(x),
+            final_activation=lambda x: jnn.sigmoid(x),
             key=key,
         )
 
@@ -104,11 +104,13 @@ class Param(eqx.Module):
         return self.mlp(jnp.atleast_1d(t)).squeeze()
 
 class Main(eqx.Module):
-    k: Param
+    pp: Param
     raw_y0: jnp.ndarray
+    log_params: jnp.ndarray
 
     def __init__(self, width_size, depth, y0, scale, *, key):
-        self.k = Param(width_size, depth, key=key)
+        self.pp = Param(width_size, depth, key=key)
+        self.log_params = jnp.log(params)
 
         I0 = jnp.minimum(20 / scale[0], y0[0] / 2)
         rraw_y0 = jnp.array([y0[0] - I0, I0, y0[1]])
@@ -119,14 +121,21 @@ class Main(eqx.Module):
         states = jnn.softplus(self.raw_y0)
         return states
 
+    @property
+    def params(self):
+        # Learn relative changes while keeping all physical parameters positive.
+        return jnp.exp(self.log_params)
 
     def func(self, t, y, args):
         S, I, V = y
 
-        k = self.k(t)
+        N, c = self.pp(t)
+
+        N = 10000 * N
+        c = 100 * c
 
         params, days, scale = args
-        ll, d, dd, N, c = params
+        ll, d, dd, k = params
         ss1, ss2 = scale
 
         dS = days * ll / ss1 - days * d * S - days * k * ss2 * V * S
@@ -148,7 +157,7 @@ class Main(eqx.Module):
             # dt0=ts[1]-ts[0],
             dt0=1e-5,
             y0=self.y0,
-            args=(params, days, scale),
+            args=(self.params, days, scale),
             saveat=diffrax.SaveAt(ts=ts),
             stepsize_controller=diffrax.PIDController(rtol=1e-3, atol=1e-6),
             max_steps=50000,
@@ -267,23 +276,30 @@ def evaluate(exp):
     T_eval = pred_eval[:, 0] + pred_eval[:, 1]
     V_eval = pred_eval[:, 2]
     observed_pred = jnp.stack([pred_data[:, 0] + pred_data[:, 1], pred_data[:, 2]], axis=1)
-    k_eval = jax.vmap(exp.model.k)(ts_normal_eval)
+    pp_eval = jax.vmap(exp.model.pp)(ts_normal_eval)
+    N_eval = 5000 * pp_eval[:, 0]
+    c_eval = 50 * pp_eval[:, 1]
+    checkpoint_loss = float(jnp.mean(jnp.square((observed_pred - ys_data) / scale)))
 
-    # data + pred // k
-    fig, axes = plt.subplots(3, 1, figsize=(14, 11), sharex=True)
+    # data + pred // N(t) // c(t)
+    fig, axes = plt.subplots(4, 1, figsize=(14, 14), sharex=True)
     for index, (name, prediction) in enumerate(zip(("T", "V"), (T_eval, V_eval))):
         axes[index].plot(ts_eval, prediction, label="Prediction", color="tab:blue")
         axes[index].scatter(ts_data, ys_data[:, index], label="Data", s=20, color="tab:orange")
         axes[index].set_ylabel(name)
         axes[index].set_title(f"Observed and Predicted {name}")
         axes[index].legend()
-    axes[2].plot(ts_eval, k_eval, label="k", color="tab:green")
-    axes[2].set_ylabel("k")
-    axes[2].set_title("Estimated k(t)")
+    axes[2].plot(ts_eval, N_eval, label="N(t)", color="tab:green")
+    axes[2].set_ylabel("N")
+    axes[2].set_title("Estimated viral production parameter N(t)")
     axes[2].legend()
+    axes[3].plot(ts_eval, c_eval, label="c(t)", color="tab:purple")
+    axes[3].set_ylabel("c (1/day)")
+    axes[3].set_title("Estimated viral clearance rate c(t)")
+    axes[3].legend()
     axes[-1].set_xlabel("Time (days)")
     fig.tight_layout()
-    fig.savefig(results_dir / "data_params.png", dpi=200, bbox_inches="tight")
+    fig.savefig(results_dir / "data_param.png", dpi=200, bbox_inches="tight")
     plt.close(fig)
 
     # state: S, I, T (T = S + I)
@@ -333,7 +349,7 @@ def evaluate(exp):
     # Results
     lines = [
         f"experiment: {RUN_NAME}",
-        f"best checkpoint loss: {exp.best_loss:.8e}",
+        f"best checkpoint loss: {checkpoint_loss:.8e}",
         f"T l2 relative error: {l2_rel_error(observed_pred[:, 0], ys_data[:, 0]):.8e}",
         f"V l2 relative error: {l2_rel_error(observed_pred[:, 1], ys_data[:, 1]):.8e}",
     ]
@@ -342,9 +358,15 @@ def evaluate(exp):
     for name, value in zip(("S0", "I0", "V0"), learned_y0):
         lines.append(f"{name}: {value:.8e}")
     lines.append(f"T0: {learned_y0[0] + learned_y0[1]:.8e}")
-    lines.append("fixed parameters:")
-    for name, value in zip(("lambda", "d", "delta", "N", "c"), np.asarray(params)):
+    lines.append("learned parameters:")
+    for name, value in zip(("lambda", "d", "delta", "k"), np.asarray(exp.model.params)):
         lines.append(f"{name}: {value:.8e}")
+    lines.append("time-varying parameters (evaluation grid):")
+    for name, values in (("N", N_eval), ("c", c_eval)):
+        lines.append(f"{name}: min={float(jnp.min(values)):.8e}, max={float(jnp.max(values)):.8e}")
+    pd.DataFrame({"day": np.asarray(ts_eval), "N": np.asarray(N_eval), "c": np.asarray(c_eval)}).to_csv(
+        results_dir / "parameters.csv", index=False
+    )
     (results_dir / "error.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 if __name__ == "__main__":
@@ -352,7 +374,7 @@ if __name__ == "__main__":
     patid = 16 #1~45
     y0, ts, ys, days, scale = make_data(patid)
     exp = Experiment(y0, ts, ys, days, scale)
-    exp.train(lr=1e-5, steps=1000, viz_loss=100)
+    # exp.train(lr=1e-5, steps=100000, viz_loss=1000)
 
     # # evaluation part
     evaluate(exp)

@@ -63,7 +63,7 @@ def solve_ivp(y0, ts):
 #     def __call__(self, t):
 #         return self.mlp(jnp.atleast_1d(t)).squeeze()
 
-NUM = 5
+NUM = 4
 
 class Param(eqx.Module):
     mlp: eqx.nn.MLP
@@ -126,7 +126,7 @@ class Main(eqx.Module):
 # Training
 
 class Experiment:
-    def __init__(self, y0, ts, ys, width_size=32, depth=2, seed=5678):
+    def __init__(self, y0, ts, ys, width_size=64, depth=2, seed=5678):
         self.model = Main(width_size, depth, key=jr.PRNGKey(seed))
         self.y0, self.ts, self.ys = y0, ts, ys
 
@@ -236,10 +236,10 @@ def evaluate(exp):
     # data + pred // param
     fig, axes = plt.subplots(1, 2, figsize=(14, 7))
 
-    axes[0].plot(ts_eval, pred_eval[:, 0], label="pred x", color="tab:blue")
-    axes[0].plot(ts_eval, pred_eval[:, 1], label="pred z", color="tab:orange")
-    axes[0].scatter(ts_data, exp.ys[:, 0], label="data x", s=10, color="tab:blue", alpha=1.0)
-    axes[0].scatter(ts_data, exp.ys[:, 1], label="data z", s=10, color="tab:orange", alpha=1.0)
+    axes[0].plot(ts_eval, pred_eval[:, 0], label="pred x", color="tab:blue", zorder=1)
+    axes[0].plot(ts_eval, pred_eval[:, 1], label="pred z", color="tab:orange", zorder=1)
+    axes[0].scatter(ts_data, exp.ys[:, 0], label="data x", s=10, color="tab:red", alpha=1.0, zorder=2)
+    axes[0].scatter(ts_data, exp.ys[:, 1], label="data z", s=10, color="tab:purple", alpha=1.0, zorder=1)
     axes[0].set_title("Observed Data and Model Prediction")
     axes[0].legend()
 
@@ -278,7 +278,7 @@ if __name__ == "__main__":
     # training part
     y0, ts, ys = solve_ivp(y0, ts)
     exp = Experiment(y0, ts, ys)
-    exp.train(lr=1e-5, steps=100000, lam_d2=1e-8)
+    # exp.train(lr=1e-5, steps=100000, lam_d2=1e-10)
 
     # # evaluation part
     evaluate(exp)

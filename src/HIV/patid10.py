@@ -356,10 +356,10 @@ def evaluate(exp):
 
 if __name__ == "__main__":
     # training part
-    patid = 30 #1~45
+    patid = 10 #1~45
     y0, ts, ys, days, scale = make_data(patid)
     exp = Experiment(y0, ts, ys, days, scale)
-    exp.train(lr=1e-5, steps=100000, viz_loss=1000)
+    exp.train(lr=1e-5, steps=500000, viz_loss=1000)
 
     # # evaluation part
     evaluate(exp)

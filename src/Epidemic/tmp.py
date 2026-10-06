@@ -18,26 +18,46 @@ RUN_NAME = Path(__file__).stem
 
 # Data
 
-y0 = jnp.array([4865., 9., 68., 0., 0.])
-params = jnp.array([0.0003671, 0.0006762, 0.0027400, 0.8500000, 0.0001500, 0.0300000, 0.3500000]) #mm, r, dd, ss, kk, aa, gg
+POPULATION = 5e+7 # Suppose total population in korea
 
-def make_data():
-    df = pd.read_csv(BASE_DIR / "influenza_sydney_1919.csv")
-    ys = jnp.asarray(df["Total_Cases"].to_numpy(), dtype=jnp.float32)
-    dates = pd.to_datetime("1919 " + df["Month"] + " " + df["Date"].astype(str),
-                           format="%Y %B %d")
-    ts = jnp.asarray((dates - dates.iloc[0]).dt.days.to_numpy(), dtype=jnp.float32)
+path = Path(__file__).with_name("COVID19_total_cases.csv")
+
+df = pd.read_csv(path, encoding="utf-8-sig")
+
+df["date"] = pd.to_datetime(df["date"], format="%Y%m%d")
+df = df.sort_values("date").reset_index(drop=True)
+
+y0 = jnp.array([5e7, 20000., 40000., 720000.])
+POPULATION = jnp.sum(y0)
+params = jnp.array([1 / 3.5, 1 / 5])
+
+def make_data(start=None, end=None):
+    """
+    설명
+    """
+    sub = df.copy()
+
+    if start is not None:
+        sub = sub[sub["date"] >= pd.to_datetime(start)]
+
+    if end is not None:
+        sub = sub[sub["date"] <= pd.to_datetime(end)]
+
+    sub = sub.reset_index(drop=True)
+
+    ts = jnp.array((sub["date"] - sub["date"].iloc[0]).dt.days.values)
+
+    ys = jnp.array(sub["cases"].values)
 
     # normalization
-    
-    days = ts[-1] - ts[0]
-    ys_max = jnp.max(ys)
 
-    y0_normal = y0 / ys_max   
+    days = ts[-1] - ts[0]
+
+    y0_normal = y0 / POPULATION    
     ts_normal = ts / days
-    ys_normal = ys / ys_max
-    
-    return y0_normal, ts_normal, ys_normal, days, ys_max
+    ys_normal = ys / POPULATION 
+
+    return y0_normal, ts_normal, ys_normal, days
 
 # Model
 
@@ -49,11 +69,13 @@ def softplus_inverse(value):
 
 class Beta(eqx.Module):
     mlp: eqx.nn.MLP
+    num: int = eqx.field(static=True)
 
-    def __init__(self, width_size, depth, *, key):
+    def __init__(self, width_size, depth, *, key, num=NUM):
+        self.num = num
 
         self.mlp = eqx.nn.MLP(
-            in_size = 2 * NUM + 1,
+            in_size = 2 * self.num + 1,
             out_size=1,
             width_size=width_size,
             depth=depth,
@@ -63,7 +85,7 @@ class Beta(eqx.Module):
         )
 
     def __call__(self, t):
-        freq = 2.0 ** jnp.arange(NUM)
+        freq = 2.0 ** jnp.arange(self.num)
 
         angles = 2.0 * jnp.pi * freq * t
 
@@ -79,45 +101,39 @@ class Beta(eqx.Module):
 
 class Main(eqx.Module):
     beta: Beta
-    raw_y0: jnp.ndarray
-    raw_params: jnp.ndarray
 
-    def __init__(self, width_size, depth, y0, *, key):
-        self.beta = Beta(width_size, depth, key=key)
-        # A small positive floor keeps zero initial states trainable.
-        self.raw_y0 = softplus_inverse(jnp.maximum(y0[:4], 1e-6))
-        self.raw_params = softplus_inverse(params)
+    raw_y0: jnp.ndarray
+
+    def __init__(self, width_size, depth, y0, *, key, num=NUM):
+        self.beta = Beta(width_size, depth, key=key, num=num)
+
+        self.raw_y0 = softplus_inverse(y0)
 
     @property
     def y0(self):
-        states = jnn.softplus(self.raw_y0)
-        return jnp.concatenate([states, jnp.zeros(1, dtype=states.dtype)])
-
-    @property
-    def params(self):
-        return jnn.softplus(self.raw_params)
+        y0 = jnn.softplus(self.raw_y0)
+        return jnp.concatenate([y0, jnp.asarray([0], dtype=y0.dtype)])
 
     def func(self, t, y, args):
         S, E, I, R, C = y
 
-        N = S + E + I + R
-
         bb = self.beta(t)
 
         params, d = args
-        mm, r, dd, ss, kk, aa, gg = params
+        dd, gg = params
 
-        dS = - d * bb * I * S / N - d * mm * S + d * r * N + d * dd * R
-        dE = d * bb * I * S / N - d * (mm + ss + kk) * E
-        dI = d * ss * E - d * (mm + aa + gg) * I
-        dR = d * kk * E + d * gg * I - d * mm * R - d * dd * R
-        dC = d * ss * E
+        dS = - d * bb * S * I
+        dE = - d * dd * E + d * bb * S * I
+        dI = d * dd * E - d * gg * I
+        dR = d * gg * I
+        dC = d * dd * E
 
         dy = jnp.array([dS, dE, dI, dR, dC])
 
         return dy
 
-    def __call__(self, ts, days, ys_max):
+    def __call__(self, ts, days):
+        y0 = self.y0
 
         sol = diffrax.diffeqsolve(
             diffrax.ODETerm(self.func),
@@ -125,8 +141,8 @@ class Main(eqx.Module):
             t0=ts[0],
             t1=ts[-1],
             dt0=ts[1]-ts[0],
-            y0=self.y0,
-            args=(self.params, days),
+            y0=y0,
+            args=(params, days),
             saveat=diffrax.SaveAt(ts=ts),
             stepsize_controller=diffrax.PIDController(rtol=1e-3, atol=1e-6),
         )
@@ -136,11 +152,15 @@ class Main(eqx.Module):
 # Training
 
 class Experiment:
-    def __init__(self, y0, ts, ys, days, ys_max, width_size=64, depth=8, seed=5678):
-        self.model = Main(width_size, depth, y0, key=jr.PRNGKey(seed))
-        self.ts, self.ys, self.days, self.ys_max = ts, ys, days, ys_max
+    def __init__(self, y0, ts, ys, days, width_size=64, depth=8, seed=5678, num=NUM):
+        if not isinstance(num, int) or num < 0:
+            raise ValueError("num must be a nonnegative integer")
+        self.num = num
+        self.model = Main(width_size, depth, y0, key=jr.PRNGKey(seed), num=num)
+        self.ts, self.ys, self.days = ts, ys, days
 
-        self.weights_dir = Path(BASE_DIR) / "weights" / RUN_NAME
+        self.weights_dir = Path(BASE_DIR) / "weights" / RUN_NAME / f"num_{self.num}"
+        self.results_dir = Path(BASE_DIR) / "results" / RUN_NAME / f"num_{self.num}"
 
         self.ckpt_dir = self.weights_dir / "model_weights"
         self.loss_path = self.weights_dir / "loss_list.npy"
@@ -165,7 +185,7 @@ class Experiment:
 
         def loss_fn(params):
             model = eqx.combine(params, static)
-            pred_ = model(self.ts, self.days, self.ys_max)[:,4]
+            pred_ = model(self.ts, self.days)[:,4]
             pred = jnp.diff(pred_)
             observe = self.ys[1:]
             scale = jnp.maximum(jnp.max(observe), jnp.finfo(self.ys.dtype).eps)
@@ -198,7 +218,7 @@ class Experiment:
         best, best_loss = params, jnp.array(jnp.inf)
 
 
-        print(f"Training Start: {RUN_NAME}")
+        print(f"Training Start: {RUN_NAME}, num={self.num}")
 
         for epoch in range(0, steps, viz_loss):
             count = min(viz_loss, steps - epoch)
@@ -231,22 +251,22 @@ def l2_rel_error(pred, true):
     return error / norm if norm else (0.0 if error == 0 else float("inf"))
 
 def evaluate(exp):
-    results_dir = Path(BASE_DIR) / "results" / RUN_NAME
+    results_dir = exp.results_dir
     results_dir.mkdir(parents=True, exist_ok=True)
 
     exp.model = eqx.tree_deserialise_leaves(exp.best_weight_path, exp.model)
     losses = np.load(exp.loss_path)
 
-    ts_normal_data, ys_normal_data, days, ys_max = exp.ts, exp.ys, exp.days, exp.ys_max
-    ts_data, ys_data = ts_normal_data * days, ys_normal_data * ys_max
+    ts_normal_data, ys_normal_data, days = exp.ts, exp.ys, exp.days
+    ts_data, ys_data = ts_normal_data * days, ys_normal_data * POPULATION
     
     ts_normal_eval = jnp.linspace(ts_normal_data[0], ts_normal_data[-1], (len(ts_normal_data) - 1) * 4 + 1)
     ts_eval = ts_normal_eval * days
 
-    pred_normal_eval = exp.model(ts_normal_eval, days, ys_max)
-    pred_eval = pred_normal_eval * ys_max
+    pred_normal_eval = exp.model(ts_normal_eval, days)
+    pred_eval = pred_normal_eval * POPULATION
 
-    pred_data = exp.model(ts_normal_data, days, ys_max) * ys_max
+    pred_data = exp.model(ts_normal_data, days) * POPULATION
     incidence_pred = jnp.diff(pred_data[:, 4])
     ts_incidence = ts_data[1:]
     ys_incidence = ys_data[1:]
@@ -310,28 +330,28 @@ def evaluate(exp):
     # Results
     lines = [
         f"experiment: {RUN_NAME}",
+        f"num: {exp.num}",
+        f"Fourier input size: {2 * exp.num + 1}",
         f"best checkpoint loss: {best_loss:.8e}",
         f"incidence l2 relative error: {l2_rel_error(incidence_pred, ys_incidence):.8e}",
     ]
 
-    learned_y0 = np.asarray(exp.model.y0) * float(ys_max)
+    learned_y0 = np.asarray(exp.model.y0) * POPULATION
     lines.append("initial states (people):")
     for name, value in zip(("S0", "E0", "I0", "R0"), learned_y0[:4]):
-        lines.append(f"{name}: {value:.8e}")
-    lines.append(f"C0 (fixed): {learned_y0[4]:.8e}")
-
-    lines.append("learned parameters (1/day):")
-    for name, value in zip(("mu", "r", "delta", "sigma", "kappa", "alpha", "gamma"),
-                           np.asarray(exp.model.params)):
         lines.append(f"{name}: {value:.8e}")
 
     (results_dir / "error.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 if __name__ == "__main__":
     # training part
-    y0, ts, ys, days, ys_max = make_data()
-    exp = Experiment(y0, ts, ys, days, ys_max)
-    exp.train(lr=1e-5, steps=500000)
+    y0, ts, ys, days = make_data("2022-01", "2023-04")
 
-    # # evaluation part
-    evaluate(exp)
+    num_list = [2, 4, 6, 8, 10]
+
+    for num in num_list:
+        exp = Experiment(y0, ts, ys, days, num=num)
+        exp.train(lr=1e-5, steps=50000, lam_d2 = 0.)
+
+        # evaluation part
+        evaluate(exp)

@@ -17,11 +17,11 @@ RUN_NAME = Path(__file__).stem
 
 # Data
 
-POPULATION = 5e7
-y0 = jnp.array([POPULATION, 20000., 40000., 720000., 0.])
+y0 = jnp.array([5e7, 20000., 40000., 720000., 0.])
+POPULATION = jnp.sum(y0)
 ts = jnp.linspace(0, 365, 366)
 
-params = jnp.array([1/5, 1/10, 1/180]) #dd, gg, aa
+params = jnp.array([1/5, 1/10]) #dd, gg, aa
 
 def beta(t):
     period = 365 / 3
@@ -29,13 +29,13 @@ def beta(t):
     return 0.1 * decay * jnp.sin(2 * jnp.pi * t /period) + 0.15
 
 def func(t, y, args):
-    dd, gg, aa = args
+    dd, gg = args
     S, E, I, R, C = y
 
-    dS = - beta(t) * S * I / POPULATION + aa * R
+    dS = - beta(t) * S * I / POPULATION
     dE = beta(t) * S * I / POPULATION - dd * E
     dI = dd * E - gg * I
-    dR = gg * I - aa * R
+    dR = gg * I
     dC = dd * E
     return jnp.array([dS, dE, dI, dR, dC])
 
@@ -102,6 +102,24 @@ class Beta(eqx.Module):
 
         return out.squeeze()
 
+# class Beta(eqx.Module):
+#     mlp: eqx.nn.MLP
+
+#     def __init__(self, width_size, depth, *, key):
+
+#         self.mlp = eqx.nn.MLP(
+#             in_size = 1,
+#             out_size=1,
+#             width_size=width_size,
+#             depth=depth,
+#             activation=jnn.tanh,
+#             final_activation=jnn.softplus,
+#             key=key,
+#         )
+
+#     def __call__(self, t):
+#         return self.mlp(jnp.atleast_1d(t)).squeeze()
+
 class Main(eqx.Module):
     beta: Beta
 
@@ -114,12 +132,12 @@ class Main(eqx.Module):
         bb = self.beta(t)
 
         params, d = args
-        dd, gg, aa = params
+        dd, gg = params
 
-        dS = - d * bb * S * I + d * aa * R
+        dS = - d * bb * S * I
         dE = - d * dd * E + d * bb * S * I
         dI = d * dd * E - d * gg * I
-        dR = d * gg * I - d * aa * R
+        dR = d * gg * I
         dC = d * dd * E
 
         dy = jnp.array([dS, dE, dI, dR, dC])
@@ -266,12 +284,13 @@ def evaluate(exp):
     # data + pred // beta
     fig, axes = plt.subplots(2, 1, figsize=(14, 7))
 
-    axes[0].plot(ts_incidence, incidence_pred, label="pred", color="tab:blue")
-    axes[0].scatter(ts_incidence, ys_incidence, label="data", s=4, color="tab:orange")
+    axes[0].plot(ts_incidence, incidence_pred, label="pred", color="tab:blue", zorder=1)
+    axes[0].scatter(ts_incidence, ys_incidence, label="data", s=2, color="tab:orange", zorder=2)
     axes[0].set_title("Observed Data and Model Prediction")
     axes[0].legend()
 
-    axes[1].plot(ts_eval, beta_eval, label="beta", color="tab:green")
+    axes[1].plot(ts_eval, beta(ts_eval), label="beta true", color="tab:orange")
+    axes[1].plot(ts_eval, beta_eval, label="beta pred", linestyle="--", color="tab:blue")
     axes[1].set_title("Estimated Parameter")
     axes[1].legend()
 
@@ -325,7 +344,7 @@ if __name__ == "__main__":
     # training part
     y0, ts, ys, days = make_data(y0, ts)
     exp = Experiment(y0, ts, ys, days)
-    exp.train(lr=1e-5, steps=10000, lam_d2 = 1e-8)
+    exp.train(lr=1e-5, steps=500000, lam_d2 = 1e-8)
 
     # # evaluation part
     evaluate(exp)

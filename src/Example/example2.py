@@ -86,7 +86,7 @@ class Main(eqx.Module):
 # Training
 
 class Experiment:
-    def __init__(self, y0, ts, ys, width_size=32, depth=2, seed=5678):
+    def __init__(self, y0, ts, ys, width_size=64, depth=2, seed=5678):
         self.model = Main(width_size, depth, key=jr.PRNGKey(seed))
         self.y0, self.ts, self.ys = y0, ts, ys
 
@@ -196,8 +196,8 @@ def evaluate(exp):
     # data + pred // param
     fig, axes = plt.subplots(1, 2, figsize=(14, 7))
 
-    axes[0].plot(ts_eval, pred_eval, label="pred", color="tab:blue")
-    axes[0].scatter(ts_data, exp.ys, label="data", s=10, color="tab:orange", alpha=1.0)
+    axes[0].plot(ts_eval, pred_eval, label="pred", color="tab:blue", zorder=1)
+    axes[0].scatter(ts_data, exp.ys, label="data", s=5, color="tab:red", zorder=2)
     axes[0].set_title("Observed Data and Model Prediction")
     axes[0].legend()
 
@@ -232,7 +232,7 @@ if __name__ == "__main__":
     # training part
     y0, ts, ys = solve_ivp(y0, ts)
     exp = Experiment(y0, ts, ys)
-    exp.train(lr=1e-5, steps=100000)
+    # exp.train(lr=1e-5, steps=1000000)
 
     # # evaluation part
     evaluate(exp)

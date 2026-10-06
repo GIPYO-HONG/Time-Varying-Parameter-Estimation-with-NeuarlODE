@@ -31,5 +31,5 @@ def plot(patid):
     plt.close(fig)
 
 if __name__ == "__main__":
-    patid = 30
+    patid = 10
     plot(patid)

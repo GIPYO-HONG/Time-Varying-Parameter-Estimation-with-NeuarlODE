@@ -17,9 +17,6 @@ BASE_DIR = Path(__file__).resolve().parent
 RUN_NAME = Path(__file__).stem
 
 # Data
-
-POPULATION = 5e+7 # Suppose total population in korea
-
 path = Path(__file__).with_name("COVID19_total_cases.csv")
 
 df = pd.read_csv(path, encoding="utf-8-sig")
@@ -27,8 +24,9 @@ df = pd.read_csv(path, encoding="utf-8-sig")
 df["date"] = pd.to_datetime(df["date"], format="%Y%m%d")
 df = df.sort_values("date").reset_index(drop=True)
 
-y0 = jnp.array([POPULATION, 20000., 40000., 720000.])
-params = jnp.array([1 / 5, 1 / 10, 1 / 180])
+y0 = jnp.array([5e7, 20000., 40000., 720000.])
+POPULATION = jnp.sum(y0)
+params = jnp.array([1 / 3.5, 1 / 5])
 
 def make_data(start=None, end=None):
     """
@@ -68,11 +66,13 @@ def softplus_inverse(value):
 
 class Beta(eqx.Module):
     mlp: eqx.nn.MLP
+    num: int = eqx.field(static=True)
 
-    def __init__(self, width_size, depth, *, key):
+    def __init__(self, width_size, depth, *, key, num=NUM):
+        self.num = num
 
         self.mlp = eqx.nn.MLP(
-            in_size = 2 * NUM + 1,
+            in_size = 2 * self.num + 1,
             out_size=1,
             width_size=width_size,
             depth=depth,
@@ -82,7 +82,7 @@ class Beta(eqx.Module):
         )
 
     def __call__(self, t):
-        freq = 2.0 ** jnp.arange(NUM)
+        freq = 2.0 ** jnp.arange(self.num)
 
         angles = 2.0 * jnp.pi * freq * t
 
@@ -100,22 +100,16 @@ class Main(eqx.Module):
     beta: Beta
 
     raw_y0: jnp.ndarray
-    raw_params: jnp.ndarray
 
     def __init__(self, width_size, depth, y0, *, key):
         self.beta = Beta(width_size, depth, key=key)
 
         self.raw_y0 = softplus_inverse(y0)
-        self.raw_params = softplus_inverse(params)
 
     @property
     def y0(self):
         y0 = jnn.softplus(self.raw_y0)
         return jnp.concatenate([y0, jnp.asarray([0], dtype=y0.dtype)])
-
-    @property
-    def params(self):
-        return jnn.softplus(self.raw_params)
 
     def func(self, t, y, args):
         S, E, I, R, C = y
@@ -123,12 +117,12 @@ class Main(eqx.Module):
         bb = self.beta(t)
 
         params, d = args
-        dd, gg, aa = params
+        dd, gg = params
 
-        dS = - d * bb * S * I + d * aa * R
+        dS = - d * bb * S * I
         dE = - d * dd * E + d * bb * S * I
         dI = d * dd * E - d * gg * I
-        dR = d * gg * I - d * aa * R
+        dR = d * gg * I
         dC = d * dd * E
 
         dy = jnp.array([dS, dE, dI, dR, dC])
@@ -145,7 +139,7 @@ class Main(eqx.Module):
             t1=ts[-1],
             dt0=ts[1]-ts[0],
             y0=y0,
-            args=(self.params, days),
+            args=(params, days),
             saveat=diffrax.SaveAt(ts=ts),
             stepsize_controller=diffrax.PIDController(rtol=1e-3, atol=1e-6),
         )
@@ -338,17 +332,13 @@ def evaluate(exp):
     for name, value in zip(("S0", "E0", "I0", "R0"), learned_y0[:4]):
         lines.append(f"{name}: {value:.8e}")
 
-    lines.append("learned parameters (1/day):")
-    for name, value in zip(("delta", "gamma", "alpha"), np.asarray(exp.model.params)):
-        lines.append(f"{name}: {value:.8e}")
-
     (results_dir / "error.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 if __name__ == "__main__":
     # training part
     y0, ts, ys, days = make_data("2022-01", "2023-04")
     exp = Experiment(y0, ts, ys, days)
-    exp.train(lr=1e-5, steps=10000, lam_d2 = 1e-8)
+    exp.train(lr=1e-5, steps=50000, lam_d2 = 0.)
 
     # # evaluation part
     evaluate(exp)
